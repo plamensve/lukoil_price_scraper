@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 import sys
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 from PIL import Image
@@ -58,8 +58,8 @@ class PriceScraperApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("GTA Petroleum | Lukoil Price Export")
-        self.geometry("1010x835")
-        self.minsize(820, 690)
+        self.geometry("1010x675")
+        self.minsize(820, 560)
         self.configure(fg_color=BG)
         self.prices: PriceList | None = None
         self.source_file: Path | None = None
@@ -131,6 +131,21 @@ class PriceScraperApp(ctk.CTk):
         )
         self.file_label.pack(side="left", padx=15, fill="x", expand=True)
 
+        ctk.CTkLabel(
+            import_card,
+            text=(
+                "Как се работи:\n"
+                "1. Влез в Лукойл и отвори страницата с цените.\n"
+                "2. Натисни Ctrl+S и запази като „Уеб страница, само HTML“ (.htm/.html).\n"
+                "3. Избери запазения файл по-горе, маркирай терминалите и натисни „Експорт в Excel“."
+            ),
+            font=ctk.CTkFont(size=12),
+            text_color=MUTED,
+            justify="left",
+            anchor="w",
+            wraplength=900,
+        ).pack(fill="x", padx=20, pady=(0, 10))
+
         self.summary_label = ctk.CTkLabel(
             import_card, text="Очаква се HTML файл с ценовите таблици.",
             height=33, fg_color="#F4F7FA", corner_radius=7, text_color=MUTED,
@@ -165,49 +180,9 @@ class PriceScraperApp(ctk.CTk):
             text_color=MUTED, font=ctk.CTkFont(size=12),
         ).grid(row=0, column=0, sticky="w", padx=14, pady=15)
 
-        preview_card = self._card(body)
-        preview_card.pack(fill="x", pady=(0, 12))
-        self._heading(preview_card, "03", "Преглед на извлечените цени")
-        self.preview_count = ctk.CTkLabel(
-            preview_card, text="Няма заредени редове", text_color=MUTED,
-            font=ctk.CTkFont(size=12),
-        )
-        self.preview_count.pack(anchor="w", padx=20, pady=(0, 8))
-
-        table_container = tk.Frame(preview_card, bg=WHITE)
-        table_container.pack(fill="x", padx=20, pady=(0, 16))
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure(
-            "Lukoil.Treeview", background=WHITE, foreground=INK,
-            fieldbackground=WHITE, bordercolor=BORDER, rowheight=28,
-            font=("Segoe UI", 10),
-        )
-        style.configure(
-            "Lukoil.Treeview.Heading", background="#E9EFF4",
-            foreground=INK, bordercolor=BORDER,
-            font=("Segoe UI", 10, "bold"), padding=(8, 7),
-        )
-        style.map("Lukoil.Treeview", background=[("selected", "#D8EEF4")],
-                  foreground=[("selected", INK)])
-        cols = ("terminal", "product", "net", "base", "vat", "gross")
-        self.preview = ttk.Treeview(
-            table_container, columns=cols, show="headings", height=6,
-            style="Lukoil.Treeview",
-        )
-        widths = (155, 295, 95, 110, 90, 100)
-        labels = ("Терминал", "Гориво", "Нетна", "Дан. основа", "ДДС", "С ДДС")
-        for key, label, width in zip(cols, labels, widths):
-            self.preview.heading(key, text=label)
-            self.preview.column(key, width=width, minwidth=70, anchor="w" if key in cols[:2] else "e")
-        x_scroll = ttk.Scrollbar(table_container, orient="horizontal", command=self.preview.xview)
-        self.preview.configure(xscrollcommand=x_scroll.set)
-        self.preview.pack(fill="x")
-        x_scroll.pack(fill="x")
-
         export_card = self._card(body)
         export_card.pack(fill="x", pady=(0, 12))
-        self._heading(export_card, "04", "Създай Excel файл")
+        self._heading(export_card, "03", "Създай Excel файл")
         self.export_button = ctk.CTkButton(
             export_card, text="Експорт в Excel (.xlsx)",
             height=48, fg_color=TEAL, hover_color="#066962",
@@ -251,7 +226,7 @@ class PriceScraperApp(ctk.CTk):
         select = not all(var.get() for var in self.terminal_vars.values())
         for var in self.terminal_vars.values():
             var.set(select)
-        self._refresh_preview()
+        self._update_export_button()
 
     def _render_terminals(self) -> None:
         for widget in self.terminal_grid.winfo_children():
@@ -269,7 +244,7 @@ class PriceScraperApp(ctk.CTk):
             self.terminal_vars[name] = var
             checkbox = ctk.CTkCheckBox(
                 self.terminal_grid, text=f"{name}   ({count})",
-                variable=var, text_color=INK, command=self._refresh_preview,
+                variable=var, text_color=INK, command=self._update_export_button,
                 fg_color=TEAL, hover_color="#0A9388",
                 font=ctk.CTkFont(size=12), checkbox_width=19,
                 checkbox_height=19, border_width=2,
@@ -280,31 +255,13 @@ class PriceScraperApp(ctk.CTk):
             )
         self.terminal_hint.configure(text=f"Намерени {len(totals)} терминала")
 
-    def _refresh_preview(self) -> None:
-        self.preview.delete(*self.preview.get_children())
-        if not self.prices:
-            self.preview_count.configure(text="Няма заредени редове")
-            self._update_export_button()
-            return
-        selected = set(self._selected())
-        filtered = [row for row in self.prices.rows if row.terminal in selected]
-        self.preview_count.configure(
-            text=f"{len(filtered)} избрани реда · Показани първите {min(30, len(filtered))}"
-        )
-        for row in filtered[:30]:
-            self.preview.insert("", "end", values=(
-                row.terminal, row.product, row.net_price,
-                row.tax_base, row.vat, row.gross_price,
-            ))
-        self._update_export_button()
-
     def _clear_data(self) -> None:
         self.prices = None
         self.source_file = None
         self.file_label.configure(text="Не е избран файл", text_color=MUTED)
         self.summary_label.configure(text="Очаква се HTML файл с ценовите таблици.")
         self._render_terminals()
-        self._refresh_preview()
+        self._update_export_button()
 
     def _import_file(self) -> None:
         filename = filedialog.askopenfilename(
@@ -340,7 +297,7 @@ class PriceScraperApp(ctk.CTk):
             text_color=TEAL, fg_color=SOFT,
         )
         self._render_terminals()
-        self._refresh_preview()
+        self._update_export_button()
         self._set_status(f"Успешно заредена ценова листа: {self.source_file.name}", True)
 
     def _export(self) -> None:
