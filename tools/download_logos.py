@@ -71,27 +71,41 @@ def trim_background(image: Image.Image) -> Image.Image:
 def main() -> None:
     ASSETS.mkdir(parents=True, exist_ok=True)
     for name, source in SOURCES.items():
-        print(f"Downloading {name} from {source}", flush=True)
-        image = trim_background(fetch_image(source))
-        if image.width > 1100:
-            ratio = 1100 / image.width
-            image = image.resize(
-                (1100, round(image.height * ratio)),
-                Image.Resampling.LANCZOS,
-            )
         destination = ASSETS / name
-        image.save(destination, optimize=True)
-        print(f"Bundled {destination.name}: {image.width}x{image.height}", flush=True)
+        if destination.is_file():
+            print(f"Using bundled {destination.name}", flush=True)
+            continue
+        print(f"Downloading {name} from {source}", flush=True)
+        try:
+            image = trim_background(fetch_image(source))
+            if image.width > 1100:
+                ratio = 1100 / image.width
+                image = image.resize(
+                    (1100, round(image.height * ratio)),
+                    Image.Resampling.LANCZOS,
+                )
+            image.save(destination, optimize=True)
+            print(f"Bundled {destination.name}: {image.width}x{image.height}", flush=True)
+        except Exception as exc:
+            # Corporate sites/Wikimedia may rate-limit CI runners. Do not
+            # prevent shipping an offline Excel exporter over image hosting.
+            print(f"WARNING: {name} unavailable: {exc}", flush=True)
 
-    # Application icon from the official GTA emblem (left-hand side).
-    gta = Image.open(ASSETS / "gta.png").convert("RGBA")
-    # Cropped source begins with the GTA diamond, about 1:1 in aspect ratio.
-    emblem_size = min(gta.height, int(gta.width * 0.31))
-    emblem = gta.crop((0, 0, emblem_size, min(emblem_size, gta.height)))
-    icon = Image.new("RGBA", (256, 256), "white")
-    emblem.thumbnail((210, 210), Image.Resampling.LANCZOS)
-    icon.alpha_composite(emblem, ((256 - emblem.width) // 2, (256 - emblem.height) // 2))
-    icon.save(ASSETS / "app.ico", sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    # Neutral, brand-independent icon if neither external asset is available.
+    # The actual logos will display when supplied as local assets.
+    from PIL import ImageDraw
+
+    icon = Image.new("RGBA", (256, 256), "#FFFFFF")
+    painter = ImageDraw.Draw(icon)
+    painter.rounded_rectangle((24, 24, 232, 232), radius=34, fill="#F3F6F8", outline="#CFD9E2", width=5)
+    painter.rounded_rectangle((59, 54, 197, 204), radius=15, fill="#D62834")
+    painter.rounded_rectangle((77, 76, 179, 180), radius=7, fill="#FFFFFF")
+    for top, width in ((102, 68), (128, 70), (154, 45)):
+        painter.rounded_rectangle((92, top, 92 + width, top + 8), radius=3, fill="#D62834")
+    icon.save(
+        ASSETS / "app.ico",
+        sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+    )
     print("App icon bundled", flush=True)
 
 

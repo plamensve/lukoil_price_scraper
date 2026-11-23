@@ -91,7 +91,7 @@ class PriceScraperApp(ctk.CTk):
             except Exception:
                 pass
         ctk.CTkLabel(parent, text=fallback, text_color=INK,
-                     font=ctk.CTkFont(size=18, weight="bold")).pack()
+                     font=ctk.CTkFont(size=12, weight="bold")).pack()
 
     def _heading(self, parent, number: str, title: str) -> None:
         row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -107,52 +107,11 @@ class PriceScraperApp(ctk.CTk):
         ).pack(side="left", padx=(10, 0))
 
     def _build_ui(self) -> None:
-        top = ctk.CTkFrame(self, fg_color=WHITE, corner_radius=0, height=132)
-        top.pack(fill="x")
-        top.pack_propagate(False)
-        ctk.CTkFrame(top, fg_color=RED, height=5, corner_radius=0).pack(fill="x")
-
-        brands = ctk.CTkFrame(top, fg_color="transparent")
-        brands.pack(fill="both", expand=True, padx=30, pady=14)
-        brands.grid_columnconfigure((0, 2), weight=1)
-
-        left = ctk.CTkFrame(brands, fg_color="transparent")
-        left.grid(row=0, column=0, sticky="w")
-        self._brand(left, "lukoil.png", "ЛУКОЙЛ", (215, 64))
-        ctk.CTkLabel(left, text="Източник на цените", text_color=MUTED,
-                     font=ctk.CTkFont(size=11)).pack(pady=(1, 0))
-
-        center = ctk.CTkFrame(brands, fg_color="transparent")
-        center.grid(row=0, column=1, padx=16)
-        ctk.CTkLabel(center, text="PRICE EXPORT", text_color=INK,
-                     font=ctk.CTkFont(size=20, weight="bold")).pack()
-        ctk.CTkLabel(center, text="Локално приложение • Excel",
-                     text_color=MUTED, font=ctk.CTkFont(size=12)).pack(pady=(4, 0))
-
-        right = ctk.CTkFrame(brands, fg_color="transparent")
-        right.grid(row=0, column=2, sticky="e")
-        self._brand(right, "gta.png", "GTA PETROLEUM", (215, 70))
-        ctk.CTkLabel(right, text="Обработка на данните", text_color=MUTED,
-                     font=ctk.CTkFont(size=11)).pack(pady=(1, 0))
-
         body = ctk.CTkScrollableFrame(
             self, fg_color="transparent", corner_radius=0,
             scrollbar_button_color="#BDC9D3",
         )
-        body.pack(fill="both", expand=True, padx=22, pady=(16, 6))
-
-        intro = ctk.CTkFrame(body, fg_color="transparent")
-        intro.pack(fill="x", pady=(0, 14))
-        ctk.CTkLabel(
-            intro, text="Ценови листи на Лукойл",
-            text_color=INK, font=ctk.CTkFont(size=22, weight="bold"),
-        ).pack(anchor="w")
-        ctk.CTkLabel(
-            intro,
-            text="Запази страницата от Chrome с Ctrl+S → зареди HTML файла → експортирай в Excel.",
-            text_color=MUTED, font=ctk.CTkFont(size=13),
-            wraplength=920, justify="left",
-        ).pack(anchor="w", pady=(4, 0))
+        body.pack(fill="both", expand=True, padx=22, pady=(18, 6))
 
         import_card = self._card(body)
         import_card.pack(fill="x", pady=(0, 12))
@@ -262,6 +221,17 @@ class PriceScraperApp(ctk.CTk):
             command=self._export, state="disabled",
         )
         self.export_button.pack(fill="x", padx=20, pady=(0, 15))
+
+        # Compact brand attribution belongs below the workflow, not in a
+        # large banner above the import controls.
+        attribution = ctk.CTkFrame(export_card, fg_color="transparent")
+        attribution.pack(fill="x", padx=22, pady=(0, 14))
+        left = ctk.CTkFrame(attribution, fg_color="transparent")
+        left.pack(side="left")
+        self._brand(left, "lukoil.png", "ЛУКОЙЛ", (95, 30))
+        right = ctk.CTkFrame(attribution, fg_color="transparent")
+        right.pack(side="right")
+        self._brand(right, "gta.png", "GTA PETROLEUM", (115, 30))
 
         self.status_label = ctk.CTkLabel(
             self, text="Готово за работа · Всички данни се обработват локално",
