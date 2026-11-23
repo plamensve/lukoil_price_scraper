@@ -1,0 +1,4 @@
+customtkinter>=5.2,<7
+playwright>=1.50,<2
+beautifulsoup4>=4.12,<5
+openpyxl>=3.1,<4

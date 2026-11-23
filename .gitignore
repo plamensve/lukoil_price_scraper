@@ -1,0 +1,24 @@
+# Python / IDE
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.idea/
+*.egg-info/
+
+# Build output
+build/
+dist/
+*.spec
+
+# User-specific browser sessions / security
+BrowserProfile/
+lukoil_browser_profile/
+playwright/.auth/
+.auth/
+*.log
+
+# Generated reports
+*.xlsx
+*.xls
