@@ -30,12 +30,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt "pyinstaller>=6.12,<7"
 
+      - name: Download official logos and create app icon
+        run: python tools/download_logos.py
+
       - name: Run parser and export tests
         run: python -m unittest discover -s tests -v
 
       - name: Build standalone Windows application
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name LukoilPriceScraper --collect-all playwright --collect-data customtkinter --hidden-import=PIL._tkinter_finder main.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name LukoilPriceScraper --icon assets/app.ico --add-data "assets;assets" --collect-data customtkinter --hidden-import=PIL._tkinter_finder main.py
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4

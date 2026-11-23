@@ -13,10 +13,13 @@ if errorlevel 1 goto :error
 python -m pip install -r requirements.txt "pyinstaller>=6.12,<7"
 if errorlevel 1 goto :error
 
+python tools\download_logos.py
+if errorlevel 1 goto :error
+
 python -m unittest discover -s tests -v
 if errorlevel 1 goto :error
 
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name LukoilPriceScraper --collect-all playwright --collect-data customtkinter --hidden-import=PIL._tkinter_finder main.py
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name LukoilPriceScraper --icon assets\app.ico --add-data "assets;assets" --collect-data customtkinter --hidden-import=PIL._tkinter_finder main.py
 if errorlevel 1 goto :error
 
 echo.

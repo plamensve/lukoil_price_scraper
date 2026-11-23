@@ -1,297 +1,416 @@
-"""CustomTkinter desktop app for authenticated Lukoil wholesale prices."""
+"""GTA Petroleum · Lukoil HTML price list -> Excel desktop utility.
+
+Fully local workflow:
+    Chrome (logged in) -> Ctrl+S -> HTML file -> Import -> Excel.
+No browser debugging, extension, web server, or login automation required.
+"""
 from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from queue import Empty
+import sys
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
+from PIL import Image
 
-from lukoil_scraper.browser import BrowserWorker
 from lukoil_scraper.excel_export import export_excel
-from lukoil_scraper.parser import TERMINALS, filter_prices, parse_prices
+from lukoil_scraper.parser import PriceList, filter_prices, parse_prices
 
 
-ctk.set_appearance_mode("dark")
+ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
 
+BG = "#F2F5F8"
+WHITE = "#FFFFFF"
+INK = "#172C3E"
+MUTED = "#65788A"
+BORDER = "#DFE6EC"
+RED = "#D62834"
+TEAL = "#087F78"
+SOFT = "#E7F4F1"
+BLUE = "#146B9B"
 
-class LukoilApp(ctk.CTk):
+
+def resource_path(name: str) -> Path:
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return root / "assets" / name
+
+
+def read_saved_html(filename: str | Path) -> PriceList:
+    """Parse a locally saved HTML page; rely on BeautifulSoup's encoding detection."""
+    path = Path(filename)
+    if path.suffix.lower() not in {".html", ".htm"}:
+        raise ValueError("Изберете HTML файл (.html или .htm), запазен от Chrome с Ctrl+S.")
+    if not path.is_file():
+        raise FileNotFoundError(f"HTML файлът не е намерен: {path}")
+    if path.stat().st_size > 20_000_000:
+        raise ValueError("HTML файлът е над 20 MB. Запазете само страницата с цените.")
+    raw = path.read_bytes()
+    if not raw:
+        raise ValueError("HTML файлът е празен.")
+    # BeautifulSoup detects HTML meta charset and Windows encodings.
+    return parse_prices(raw)
+
+
+class PriceScraperApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Lukoil Price Scraper")
-        self.geometry("850x760")
-        self.minsize(780, 690)
-        self.configure(fg_color="#0C1523")
-        self._busy = False
-        self._closing = False
-        self.worker = BrowserWorker()
-        self.imported_prices = None
-
+        self.title("GTA Petroleum | Lukoil Price Export")
+        self.geometry("1010x835")
+        self.minsize(820, 690)
+        self.configure(fg_color=BG)
+        self.prices: PriceList | None = None
+        self.source_file: Path | None = None
+        self.terminal_vars: dict[str, tk.BooleanVar] = {}
+        self.logo_images: list[ctk.CTkImage] = []
         self._build_ui()
-        self.worker.start()
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.after(150, self._poll_events)
+
+    def _card(self, parent, **kwargs) -> ctk.CTkFrame:
+        return ctk.CTkFrame(
+            parent, fg_color=WHITE, corner_radius=13,
+            border_width=1, border_color=BORDER, **kwargs,
+        )
+
+    def _brand(self, parent, image_name: str, fallback: str,
+               size: tuple[int, int]) -> None:
+        path = resource_path(image_name)
+        if path.is_file():
+            try:
+                with Image.open(path) as raw:
+                    image = raw.convert("RGBA")
+                target_w, target_h = size
+                factor = min(target_w / image.width, target_h / image.height)
+                actual = (max(1, round(image.width * factor)),
+                          max(1, round(image.height * factor)))
+                icon = ctk.CTkImage(light_image=image, dark_image=image, size=actual)
+                self.logo_images.append(icon)
+                ctk.CTkLabel(parent, image=icon, text="").pack(anchor="center")
+                return
+            except Exception:
+                pass
+        ctk.CTkLabel(parent, text=fallback, text_color=INK,
+                     font=ctk.CTkFont(size=18, weight="bold")).pack()
+
+    def _heading(self, parent, number: str, title: str) -> None:
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=20, pady=(16, 10))
+        ctk.CTkLabel(
+            row, text=number, width=28, height=28, corner_radius=6,
+            fg_color="#FCE9EB", text_color=RED,
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(side="left")
+        ctk.CTkLabel(
+            row, text=title, font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=INK,
+        ).pack(side="left", padx=(10, 0))
 
     def _build_ui(self) -> None:
-        root = ctk.CTkFrame(self, fg_color="transparent")
-        root.pack(fill="both", expand=True, padx=28, pady=23)
+        top = ctk.CTkFrame(self, fg_color=WHITE, corner_radius=0, height=132)
+        top.pack(fill="x")
+        top.pack_propagate(False)
+        ctk.CTkFrame(top, fg_color=RED, height=5, corner_radius=0).pack(fill="x")
 
+        brands = ctk.CTkFrame(top, fg_color="transparent")
+        brands.pack(fill="both", expand=True, padx=30, pady=14)
+        brands.grid_columnconfigure((0, 2), weight=1)
+
+        left = ctk.CTkFrame(brands, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="w")
+        self._brand(left, "lukoil.png", "ЛУКОЙЛ", (215, 64))
+        ctk.CTkLabel(left, text="Източник на цените", text_color=MUTED,
+                     font=ctk.CTkFont(size=11)).pack(pady=(1, 0))
+
+        center = ctk.CTkFrame(brands, fg_color="transparent")
+        center.grid(row=0, column=1, padx=16)
+        ctk.CTkLabel(center, text="PRICE EXPORT", text_color=INK,
+                     font=ctk.CTkFont(size=20, weight="bold")).pack()
+        ctk.CTkLabel(center, text="Локално приложение • Excel",
+                     text_color=MUTED, font=ctk.CTkFont(size=12)).pack(pady=(4, 0))
+
+        right = ctk.CTkFrame(brands, fg_color="transparent")
+        right.grid(row=0, column=2, sticky="e")
+        self._brand(right, "gta.png", "GTA PETROLEUM", (215, 70))
+        ctk.CTkLabel(right, text="Обработка на данните", text_color=MUTED,
+                     font=ctk.CTkFont(size=11)).pack(pady=(1, 0))
+
+        body = ctk.CTkScrollableFrame(
+            self, fg_color="transparent", corner_radius=0,
+            scrollbar_button_color="#BDC9D3",
+        )
+        body.pack(fill="both", expand=True, padx=22, pady=(16, 6))
+
+        intro = ctk.CTkFrame(body, fg_color="transparent")
+        intro.pack(fill="x", pady=(0, 14))
         ctk.CTkLabel(
-            root, text="LUKOIL  /  PRICE SCRAPER",
-            font=ctk.CTkFont(size=25, weight="bold"),
-            text_color="#EAF1FA",
+            intro, text="Ценови листи на Лукойл",
+            text_color=INK, font=ctk.CTkFont(size=22, weight="bold"),
         ).pack(anchor="w")
         ctk.CTkLabel(
-            root,
-            text="Десктоп експорт на ценови листи от wholesale.lukoil.bg",
-            font=ctk.CTkFont(size=13),
-            text_color="#9BAFC5",
-        ).pack(anchor="w", pady=(4, 20))
+            intro,
+            text="Запази страницата от Chrome с Ctrl+S → зареди HTML файла → експортирай в Excel.",
+            text_color=MUTED, font=ctk.CTkFont(size=13),
+            wraplength=920, justify="left",
+        ).pack(anchor="w", pady=(4, 0))
 
-        status_box = ctk.CTkFrame(root, fg_color="#162438", corner_radius=12)
-        status_box.pack(fill="x", pady=(0, 16))
+        import_card = self._card(body)
+        import_card.pack(fill="x", pady=(0, 12))
+        self._heading(import_card, "01", "Зареди запазена HTML страница")
         ctk.CTkLabel(
-            status_box, text="СЪСТОЯНИЕ",
-            text_color="#87A6C5", font=ctk.CTkFont(size=11, weight="bold"),
-        ).pack(anchor="w", padx=18, pady=(13, 3))
-        self.status = ctk.CTkLabel(
-            status_box, text="●  Отвори Chrome или импортирай HTML",
-            text_color="#E6BA64", font=ctk.CTkFont(size=14),
-        )
-        self.status.pack(anchor="w", padx=18, pady=(0, 14))
-
-        login_title = ctk.CTkLabel(
-            root, text="01   ИЗТОЧНИК НА ЦЕНИТЕ",
-            text_color="#DCE7F5", font=ctk.CTkFont(size=13, weight="bold"),
-        )
-        login_title.pack(anchor="w", pady=(0, 10))
-        login_buttons = ctk.CTkFrame(root, fg_color="transparent")
-        login_buttons.pack(fill="x", pady=(0, 8))
-        login_buttons.grid_columnconfigure((0, 1), weight=1)
-        self.open_button = ctk.CTkButton(
-            login_buttons, text="Отвори Chrome за цените",
-            height=40, corner_radius=8, command=self._open_browser,
-        )
-        self.open_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        self.verify_button = ctk.CTkButton(
-            login_buttons, text="Прочети отворения таб",
-            fg_color="#294158", hover_color="#355573",
-            height=40, corner_radius=8, command=self._verify,
-        )
-        self.verify_button.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        ctk.CTkLabel(
-            root,
-            text="В Chrome, стартиран от приложението, влез ръчно при нужда. Остави ценовата листа отворена.",
-            text_color="#9BAFC5", font=ctk.CTkFont(size=12), wraplength=765, justify="left",
-        ).pack(anchor="w", pady=(3, 10))
+            import_card,
+            text="В Chrome отвори страницата с цените след вход в Лукойл. Натисни Ctrl+S и запази като „Webpage, HTML Only“.",
+            font=ctk.CTkFont(size=12), text_color=MUTED,
+            wraplength=875, justify="left",
+        ).pack(anchor="w", padx=20, pady=(0, 11))
+        actions = ctk.CTkFrame(import_card, fg_color="transparent")
+        actions.pack(fill="x", padx=20, pady=(0, 10))
         self.import_button = ctk.CTkButton(
-            root, text="Алтернатива: Импортирай запазена HTML страница",
-            height=36, fg_color="#294158", hover_color="#355573",
-            command=self._import_html,
+            actions, text="Избери HTML файл", height=42, width=210,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color=RED, hover_color="#B91F2A",
+            command=self._import_file,
         )
-        self.import_button.pack(fill="x", pady=(0, 16))
-
-        ctk.CTkLabel(
-            root, text="02   ИЗБЕРИ ТЕРМИНАЛИ",
-            text_color="#DCE7F5", font=ctk.CTkFont(size=13, weight="bold"),
-        ).pack(anchor="w", pady=(0, 9))
-
-        terminal_box = ctk.CTkFrame(root, fg_color="#162438", corner_radius=12)
-        terminal_box.pack(fill="x", pady=(0, 15))
-        terminal_box.grid_columnconfigure((0, 1), weight=1)
-        self.terminal_vars: dict[str, tk.BooleanVar] = {}
-        for index, terminal in enumerate(TERMINALS):
-            variable = tk.BooleanVar(value=True)
-            self.terminal_vars[terminal] = variable
-            ctk.CTkCheckBox(
-                terminal_box, text=terminal, variable=variable,
-                text_color="#DCE7F5",
-                checkbox_width=19, checkbox_height=19,
-                font=ctk.CTkFont(size=12),
-            ).grid(
-                row=index // 2, column=index % 2,
-                sticky="w", padx=(18, 8), pady=(14 if index < 2 else 7, 8),
-            )
-        self.all_button = ctk.CTkButton(
-            terminal_box, text="Избери всички / Изчисти", width=220,
-            fg_color="#294158", hover_color="#355573",
-            height=30, command=self._toggle_all,
+        self.import_button.pack(side="left")
+        self.file_label = ctk.CTkLabel(
+            actions, text="Не е избран файл", text_color=MUTED,
+            font=ctk.CTkFont(size=12), anchor="w",
         )
-        self.all_button.grid(row=4, column=0, columnspan=2, pady=(2, 15))
+        self.file_label.pack(side="left", padx=15, fill="x", expand=True)
 
-        ctk.CTkLabel(
-            root, text="03   ЕКСПОРТ В EXCEL",
-            text_color="#DCE7F5", font=ctk.CTkFont(size=13, weight="bold"),
-        ).pack(anchor="w", pady=(0, 10))
-        self.export_button = ctk.CTkButton(
-            root, text="Извлечи отворената таблица → Excel (.xlsx)",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            height=47, fg_color="#2B8CCB", hover_color="#2579B0",
-            corner_radius=9, command=self._export,
-        )
-        self.export_button.pack(fill="x", pady=(0, 15))
-
-        ctk.CTkLabel(
-            root, text="ЖУРНАЛ",
-            text_color="#DCE7F5", font=ctk.CTkFont(size=12, weight="bold"),
-        ).pack(anchor="w", pady=(0, 7))
-        self.log = ctk.CTkTextbox(
-            root, height=115, corner_radius=10,
-            fg_color="#162438", text_color="#CEDBE9",
+        self.summary_label = ctk.CTkLabel(
+            import_card, text="Очаква се HTML файл с ценовите таблици.",
+            height=33, fg_color="#F4F7FA", corner_radius=7, text_color=MUTED,
             font=ctk.CTkFont(size=12),
         )
-        self.log.pack(fill="both", expand=True)
-        self.log.configure(state="disabled")
-        self._log("Готово. HTML таблиците се четат от вече отворения таб, без нов вход.")
+        self.summary_label.pack(fill="x", padx=20, pady=(0, 16))
 
-    def _log(self, message: str) -> None:
-        self.log.configure(state="normal")
-        self.log.insert("end", f"[{datetime.now():%H:%M:%S}] {message}\n")
-        self.log.see("end")
-        self.log.configure(state="disabled")
+        terminal_card = self._card(body)
+        terminal_card.pack(fill="x", pady=(0, 12))
+        self._heading(terminal_card, "02", "Избери терминалите за експорт")
 
-    def _set_status(self, message: str, color: str) -> None:
-        self.status.configure(text=f"●  {message}", text_color=color)
+        selection_bar = ctk.CTkFrame(terminal_card, fg_color="transparent")
+        selection_bar.pack(fill="x", padx=20, pady=(0, 8))
+        self.terminal_hint = ctk.CTkLabel(
+            selection_bar, text="Терминалите ще се покажат след импортиране.",
+            text_color=MUTED, font=ctk.CTkFont(size=12),
+        )
+        self.terminal_hint.pack(side="left")
+        self.toggle_button = ctk.CTkButton(
+            selection_bar, text="Избери / изчисти всички", width=165,
+            height=29, fg_color="#E7EFF5", hover_color="#D7E5F0",
+            text_color=BLUE, command=self._toggle_all, state="disabled",
+        )
+        self.toggle_button.pack(side="right")
+        self.terminal_grid = ctk.CTkFrame(
+            terminal_card, fg_color="#F7F9FB", corner_radius=8,
+        )
+        self.terminal_grid.pack(fill="x", padx=20, pady=(0, 16))
+        self.terminal_grid.grid_columnconfigure((0, 1), weight=1)
+        ctk.CTkLabel(
+            self.terminal_grid, text="Няма заредени терминали.",
+            text_color=MUTED, font=ctk.CTkFont(size=12),
+        ).grid(row=0, column=0, sticky="w", padx=14, pady=15)
 
-    def _set_busy(self, busy: bool) -> None:
-        self._busy = busy
-        state = "disabled" if busy else "normal"
-        for widget in (self.open_button, self.verify_button, self.export_button, self.all_button, self.import_button):
-            widget.configure(state=state)
+        preview_card = self._card(body)
+        preview_card.pack(fill="x", pady=(0, 12))
+        self._heading(preview_card, "03", "Преглед на извлечените цени")
+        self.preview_count = ctk.CTkLabel(
+            preview_card, text="Няма заредени редове", text_color=MUTED,
+            font=ctk.CTkFont(size=12),
+        )
+        self.preview_count.pack(anchor="w", padx=20, pady=(0, 8))
+
+        table_container = tk.Frame(preview_card, bg=WHITE)
+        table_container.pack(fill="x", padx=20, pady=(0, 16))
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure(
+            "Lukoil.Treeview", background=WHITE, foreground=INK,
+            fieldbackground=WHITE, bordercolor=BORDER, rowheight=28,
+            font=("Segoe UI", 10),
+        )
+        style.configure(
+            "Lukoil.Treeview.Heading", background="#E9EFF4",
+            foreground=INK, bordercolor=BORDER,
+            font=("Segoe UI", 10, "bold"), padding=(8, 7),
+        )
+        style.map("Lukoil.Treeview", background=[("selected", "#D8EEF4")],
+                  foreground=[("selected", INK)])
+        cols = ("terminal", "product", "net", "base", "vat", "gross")
+        self.preview = ttk.Treeview(
+            table_container, columns=cols, show="headings", height=6,
+            style="Lukoil.Treeview",
+        )
+        widths = (155, 295, 95, 110, 90, 100)
+        labels = ("Терминал", "Гориво", "Нетна", "Дан. основа", "ДДС", "С ДДС")
+        for key, label, width in zip(cols, labels, widths):
+            self.preview.heading(key, text=label)
+            self.preview.column(key, width=width, minwidth=70, anchor="w" if key in cols[:2] else "e")
+        x_scroll = ttk.Scrollbar(table_container, orient="horizontal", command=self.preview.xview)
+        self.preview.configure(xscrollcommand=x_scroll.set)
+        self.preview.pack(fill="x")
+        x_scroll.pack(fill="x")
+
+        export_card = self._card(body)
+        export_card.pack(fill="x", pady=(0, 12))
+        self._heading(export_card, "04", "Създай Excel файл")
+        self.export_button = ctk.CTkButton(
+            export_card, text="Експорт в Excel (.xlsx)",
+            height=48, fg_color=TEAL, hover_color="#066962",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            command=self._export, state="disabled",
+        )
+        self.export_button.pack(fill="x", padx=20, pady=(0, 15))
+
+        self.status_label = ctk.CTkLabel(
+            self, text="Готово за работа · Всички данни се обработват локално",
+            text_color=MUTED, fg_color="#E8EEF3", anchor="w",
+            height=34, corner_radius=0, font=ctk.CTkFont(size=11),
+        )
+        self.status_label.pack(side="bottom", fill="x")
+
+    def _set_status(self, message: str, success: bool = False) -> None:
+        self.status_label.configure(
+            text="  " + message,
+            text_color=TEAL if success else MUTED,
+        )
+
+    def _selected(self) -> tuple[str, ...]:
+        return tuple(name for name, var in self.terminal_vars.items() if var.get())
+
+    def _update_export_button(self) -> None:
+        valid = self.prices is not None and bool(self._selected())
+        self.export_button.configure(state="normal" if valid else "disabled")
 
     def _toggle_all(self) -> None:
         select = not all(var.get() for var in self.terminal_vars.values())
-        for variable in self.terminal_vars.values():
-            variable.set(select)
+        for var in self.terminal_vars.values():
+            var.set(select)
+        self._refresh_preview()
 
-    def _open_browser(self) -> None:
-        self.imported_prices = None
-        self._set_busy(True)
-        self._set_status("Свързване с Chrome...", "#E6BA64")
-        self._log("Свързвам Chrome с локален debugging порт. Влез ръчно само при нужда.")
-        self.worker.submit("open")
-
-    def _verify(self) -> None:
-        self.imported_prices = None
-        self._set_busy(True)
-        self._set_status("Чета отворената страница...", "#E6BA64")
-        self.worker.submit("verify")
-
-    def _import_html(self) -> None:
-        source = filedialog.askopenfilename(
-            parent=self,
-            title="Избери HTML файл, запазен от страницата с цените",
-            filetypes=[("HTML страница", "*.html *.htm"), ("Всички файлове", "*.*")],
-        )
-        if not source:
+    def _render_terminals(self) -> None:
+        for widget in self.terminal_grid.winfo_children():
+            widget.destroy()
+        self.terminal_vars.clear()
+        if not self.prices:
+            self.toggle_button.configure(state="disabled")
             return
-        try:
-            path = Path(source)
-            if path.stat().st_size > 15_000_000:
-                raise ValueError("HTML файлът е прекалено голям (над 15 MB).")
-            raw = path.read_bytes()
-            try:
-                html = raw.decode("utf-8-sig")
-            except UnicodeDecodeError:
-                html = raw.decode("cp1251")
-            self.imported_prices = parse_prices(html)
-            self._set_status(
-                f"Зареден HTML: {len(self.imported_prices.rows)} реда от "
-                f"{len(self.imported_prices.terminals)} терминала",
-                "#63D1A5",
+        self.toggle_button.configure(state="normal")
+        totals: dict[str, int] = {}
+        for row in self.prices.rows:
+            totals[row.terminal] = totals.get(row.terminal, 0) + 1
+        for index, (name, count) in enumerate(totals.items()):
+            var = tk.BooleanVar(value=True)
+            self.terminal_vars[name] = var
+            checkbox = ctk.CTkCheckBox(
+                self.terminal_grid, text=f"{name}   ({count})",
+                variable=var, text_color=INK, command=self._refresh_preview,
+                fg_color=TEAL, hover_color="#0A9388",
+                font=ctk.CTkFont(size=12), checkbox_width=19,
+                checkbox_height=19, border_width=2,
             )
-            self._log(f"Импортирана HTML страница: {path.name}")
+            checkbox.grid(
+                row=index // 2, column=index % 2, sticky="w",
+                padx=15, pady=(13 if index < 2 else 7, 11),
+            )
+        self.terminal_hint.configure(text=f"Намерени {len(totals)} терминала")
+
+    def _refresh_preview(self) -> None:
+        self.preview.delete(*self.preview.get_children())
+        if not self.prices:
+            self.preview_count.configure(text="Няма заредени редове")
+            self._update_export_button()
+            return
+        selected = set(self._selected())
+        filtered = [row for row in self.prices.rows if row.terminal in selected]
+        self.preview_count.configure(
+            text=f"{len(filtered)} избрани реда · Показани първите {min(30, len(filtered))}"
+        )
+        for row in filtered[:30]:
+            self.preview.insert("", "end", values=(
+                row.terminal, row.product, row.net_price,
+                row.tax_base, row.vat, row.gross_price,
+            ))
+        self._update_export_button()
+
+    def _clear_data(self) -> None:
+        self.prices = None
+        self.source_file = None
+        self.file_label.configure(text="Не е избран файл", text_color=MUTED)
+        self.summary_label.configure(text="Очаква се HTML файл с ценовите таблици.")
+        self._render_terminals()
+        self._refresh_preview()
+
+    def _import_file(self) -> None:
+        filename = filedialog.askopenfilename(
+            parent=self, title="Избери HTML файл от Лукойл",
+            filetypes=[
+                ("HTML страници", "*.html *.htm"),
+                ("Всички файлове", "*.*"),
+            ],
+        )
+        if not filename:
+            return
+        # Invalidate previously loaded data even if this import fails.
+        self._clear_data()
+        try:
+            prices = read_saved_html(filename)
         except Exception as exc:
-            self.imported_prices = None
-            self._set_status("Грешка при импортиране на HTML", "#F08C87")
-            messagebox.showerror("Импорт на HTML", str(exc), parent=self)
+            self._set_status("Неуспешно зареждане на HTML файла.")
+            messagebox.showerror(
+                "Неуспешен импорт",
+                f"Не успях да разпозная ценовата листа.\n\n{exc}\n\n"
+                "Увери се, че си запазил страницата с цените, а не страницата за вход.",
+                parent=self,
+            )
+            return
+
+        self.prices = prices
+        self.source_file = Path(filename)
+        self.file_label.configure(text=self.source_file.name, text_color=INK)
+        date_text = prices.effective_date or "не е посочена"
+        self.summary_label.configure(
+            text=f"✓  {len(prices.rows)} ценови реда · "
+                 f"{len(prices.terminals)} терминала · В сила от: {date_text}",
+            text_color=TEAL, fg_color=SOFT,
+        )
+        self._render_terminals()
+        self._refresh_preview()
+        self._set_status(f"Успешно заредена ценова листа: {self.source_file.name}", True)
 
     def _export(self) -> None:
-        selected = tuple(name for name, variable in self.terminal_vars.items() if variable.get())
-        if not selected:
-            messagebox.showwarning("Терминали", "Изберете поне един терминал.", parent=self)
+        if self.prices is None:
+            messagebox.showwarning("Няма данни", "Първо зареди HTML файл.", parent=self)
             return
-
-        destination = filedialog.asksaveasfilename(
-            parent=self,
-            title="Запази ценова листа",
+        selected = self._selected()
+        if not selected:
+            messagebox.showwarning("Няма избор", "Избери поне един терминал.", parent=self)
+            return
+        safe_date = self.prices.effective_date.replace(".", "-") or datetime.now().strftime("%d-%m-%Y")
+        target = filedialog.asksaveasfilename(
+            parent=self, title="Запази ценова листа в Excel",
             defaultextension=".xlsx",
             filetypes=[("Excel Workbook", "*.xlsx")],
-            initialfile=f"Lukoil_Prices_{datetime.now():%Y-%m-%d}.xlsx",
-            initialdir=str(Path.home() / "Documents") if (Path.home() / "Documents").is_dir() else str(Path.home()),
+            initialfile=f"Lukoil_Prices_{safe_date}.xlsx",
         )
-        if not destination:
-            return
-
-        if self.imported_prices is not None:
-            try:
-                prices = filter_prices(self.imported_prices, selected)
-                output = export_excel(prices, destination)
-            except Exception as exc:
-                messagebox.showerror("Excel експорт", str(exc), parent=self)
-                return
-            self._set_status(f"Excel записан · {len(prices.rows)} реда", "#63D1A5")
-            self._log(f"Excel от импортиран HTML: {output}")
-            messagebox.showinfo("Готово", f"Записани {len(prices.rows)} реда.\n\n{output}", parent=self)
-            return
-
-        self._set_busy(True)
-        self._set_status("Чета текущия Chrome таб и записвам Excel...", "#E6BA64")
-        self._log(f"Скрейпинг на отворена страница за {len(selected)} терминала.")
-        self.worker.submit("export", (destination, selected))
-
-    def _poll_events(self) -> None:
-        if self._closing:
+        if not target:
             return
         try:
-            while True:
-                kind, payload = self.worker.events.get_nowait()
-                if kind == "log":
-                    self._log(payload)
-                elif kind == "opened":
-                    self._set_status("Chrome е готов. Отвори цените и прочети таба.", "#E6BA64")
-                    self._log("Влез при нужда и натисни „Прочети отворения таб“.")
-                elif kind == "verified":
-                    count, terminals = payload
-                    self._set_status(f"Табът е прочетен · {len(terminals)} терминала · {count} реда", "#63D1A5")
-                    self._log(f"Намерени {count} ценови реда в отворения таб.")
-                elif kind == "exported":
-                    filename, count, terminals = payload
-                    self._set_status(f"Excel записан · {count} реда", "#63D1A5")
-                    self._log(f"Експортът е успешен: {filename}")
-                    messagebox.showinfo(
-                        "Експортът е готов",
-                        f"Записани {count} реда от {len(terminals)} терминала.\n\n{filename}",
-                        parent=self,
-                    )
-                elif kind == "error":
-                    self._set_status("Грешка. Виж журнала.", "#F08C87")
-                    self._log("Грешка: " + payload)
-                    messagebox.showerror("Lukoil Price Scraper", payload, parent=self)
-                elif kind == "idle":
-                    self._set_busy(False)
-        except Empty:
-            pass
-        self.after(150, self._poll_events)
-
-    def _on_close(self) -> None:
-        if self._closing:
+            prices = filter_prices(self.prices, selected)
+            destination = export_excel(prices, target)
+        except Exception as exc:
+            self._set_status("Грешка при Excel експорта.")
+            messagebox.showerror("Грешка при Excel експорта", str(exc), parent=self)
             return
-        self._closing = True
-        self.worker.submit("stop")
-        self._close_when_done(0)
-
-    def _close_when_done(self, checks: int) -> None:
-        if not self.worker.is_alive() or checks > 25:
-            self.destroy()
-        else:
-            self.after(150, lambda: self._close_when_done(checks + 1))
+        self._set_status(f"Excel файлът е записан: {destination}", True)
+        messagebox.showinfo(
+            "Успешен експорт",
+            f"Записани {len(prices.rows)} реда от {len(prices.terminals)} терминала.\n\n{destination}",
+            parent=self,
+        )
 
 
 if __name__ == "__main__":
-    ctk.set_widget_scaling(1.0)
-    app = LukoilApp()
+    app = PriceScraperApp()
     app.mainloop()
