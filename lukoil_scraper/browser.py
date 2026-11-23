@@ -21,25 +21,29 @@ def profile_directory() -> Path:
 
 
 class BrowserWorker(Thread):
-    """Accept simple commands and emit events; never touch Tk from this thread."""
+    """Accept simple commands and emit events; never touch Tk from this thread.
+
+    Use _browser_context, not _context: Thread/greenlet internals may use
+    the latter for contextvars.Context on some Python versions.
+    """
 
     def __init__(self) -> None:
         super().__init__(name="lukoil-browser", daemon=True)
         self.commands: Queue[tuple[str, Any]] = Queue()
         self.events: Queue[tuple[str, Any]] = Queue()
         self._playwright: Playwright | None = None
-        self._context: BrowserContext | None = None
+        self._browser_context: BrowserContext | None = None
         self._page: Page | None = None
 
     def submit(self, command: str, value: Any = None) -> None:
         self.commands.put((command, value))
 
     def _ensure_browser(self) -> Page:
-        if self._context is not None:
-            pages = [p for p in self._context.pages if not p.is_closed()]
+        if self._browser_context is not None:
+            pages = [p for p in self._browser_context.pages if not p.is_closed()]
             self._page = self._page if self._page in pages else None
             if self._page is None:
-                self._page = pages[0] if pages else self._context.new_page()
+                self._page = pages[0] if pages else self._browser_context.new_page()
             return self._page
 
         if self._playwright is None:
@@ -51,7 +55,7 @@ class BrowserWorker(Thread):
         failures = []
         for channel in ("chrome", "msedge"):
             try:
-                self._context = self._playwright.chromium.launch_persistent_context(
+                self._browser_context = self._playwright.chromium.launch_persistent_context(
                     user_data_dir=str(folder),
                     channel=channel,
                     headless=False,
@@ -59,9 +63,9 @@ class BrowserWorker(Thread):
                     no_viewport=True,
                 )
                 self._page = (
-                    self._context.pages[0]
-                    if self._context.pages
-                    else self._context.new_page()
+                    self._browser_context.pages[0]
+                    if self._browser_context.pages
+                    else self._browser_context.new_page()
                 )
                 self.events.put(("log", f"Стартиран браузър: {channel}."))
                 return self._page
@@ -115,9 +119,9 @@ class BrowserWorker(Thread):
                 finally:
                     self.events.put(("idle", None))
         finally:
-            if self._context is not None:
+            if self._browser_context is not None:
                 try:
-                    self._context.close()
+                    self._browser_context.close()
                 except Exception:
                     pass
             if self._playwright is not None:
