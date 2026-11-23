@@ -13,7 +13,7 @@ if errorlevel 1 goto :error
 python -m pip install -r requirements.txt "pyinstaller>=6.12,<7"
 if errorlevel 1 goto :error
 
-python tools\download_logos.py
+python tools\build_assets.py
 if errorlevel 1 goto :error
 
 python -m unittest discover -s tests -v

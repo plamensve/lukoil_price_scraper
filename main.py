@@ -116,12 +116,6 @@ class PriceScraperApp(ctk.CTk):
         import_card = self._card(body)
         import_card.pack(fill="x", pady=(0, 12))
         self._heading(import_card, "01", "Зареди запазена HTML страница")
-        ctk.CTkLabel(
-            import_card,
-            text="В Chrome отвори страницата с цените след вход в Лукойл. Натисни Ctrl+S и запази като „Webpage, HTML Only“.",
-            font=ctk.CTkFont(size=12), text_color=MUTED,
-            wraplength=875, justify="left",
-        ).pack(anchor="w", padx=20, pady=(0, 11))
         actions = ctk.CTkFrame(import_card, fg_color="transparent")
         actions.pack(fill="x", padx=20, pady=(0, 10))
         self.import_button = ctk.CTkButton(
