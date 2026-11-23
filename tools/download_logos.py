@@ -89,7 +89,7 @@ def main() -> None:
         except Exception as exc:
             # Corporate sites/Wikimedia may rate-limit CI runners. Do not
             # prevent shipping an offline Excel exporter over image hosting.
-            print(f"WARNING: {name} unavailable: {exc}", flush=True)
+            print(f"WARNING: {name} unavailable; using text fallback", flush=True)
 
     # Neutral, brand-independent icon if neither external asset is available.
     # The actual logos will display when supplied as local assets.
