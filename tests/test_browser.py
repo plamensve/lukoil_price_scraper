@@ -1,37 +1,46 @@
-"""Regression tests for browser thread state, without launching Chrome."""
-from contextvars import Context
-import tempfile
+"""CDP price tab selection tests with mocked browser objects."""
 import unittest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-from lukoil_scraper.browser import BrowserWorker
+from lukoil_scraper.browser import BrowserWorker, find_price_tab, is_price_url
 
 
-class BrowserWorkerTests(unittest.TestCase):
-    def test_thread_context_does_not_mask_playwright_browser_context(self):
+class BrowserTabTests(unittest.TestCase):
+    def test_only_lukoil_price_list_allowed(self):
+        self.assertTrue(is_price_url("https://wholesale.lukoil.bg/orders/CeniTermList01072022"))
+        self.assertFalse(is_price_url("https://wholesale.lukoil.bg/orders/Login.aspx"))
+        self.assertFalse(is_price_url("https://evil.example/orders/CeniTermList01072022"))
+        self.assertFalse(is_price_url("http://wholesale.lukoil.bg/orders/CeniTermList01072022"))
+
+    def test_uses_latest_open_price_tab(self):
+        context = MagicMock()
+        other = MagicMock()
+        other.url = "https://example.com"
+        other.is_closed.return_value = False
+        price = MagicMock()
+        price.url = "https://wholesale.lukoil.bg/orders/CeniTermList01072022"
+        price.is_closed.return_value = False
+        context.pages = [other, price]
+        self.assertIs(find_price_tab(context), price)
+
+    def test_reads_existing_page_without_navigation(self):
         worker = BrowserWorker()
-        # This reproduces the reserved attribute collision that caused
-        # "'_contextvars.Context' object has no attribute 'pages'".
-        worker._context = Context()
-        fake_page = MagicMock()
-        fake_page.is_closed.return_value = False
-        fake_context = MagicMock()
-        fake_context.pages = [fake_page]
-
-        fake_playwright = MagicMock()
-        fake_playwright.chromium.launch_persistent_context.return_value = fake_context
-        worker._playwright = fake_playwright
-
-        with tempfile.TemporaryDirectory() as folder:
-            with patch("lukoil_scraper.browser.profile_directory", return_value=Path(folder)):
-                page = worker._ensure_browser()
-                self.assertIs(page, fake_page)
-                self.assertIs(worker._browser_context, fake_context)
-                # Calling again must reuse the real Playwright browser context
-                self.assertIs(worker._ensure_browser(), fake_page)
-                fake_playwright.chromium.launch_persistent_context.assert_called_once()
-                self.assertIsInstance(worker._context, Context)
+        context = MagicMock()
+        price = MagicMock()
+        price.url = "https://wholesale.lukoil.bg/orders/CeniTermList01072022"
+        price.is_closed.return_value = False
+        price.locator.return_value.count.return_value = 1
+        price.content.return_value = "<html>read without navigating</html>"
+        context.pages = [price]
+        worker._browser_context = context
+        worker._browser = MagicMock()
+        worker._browser.is_connected.return_value = True
+        self.assertIs(worker._connect(), context)
+        with self.assertRaisesRegex(ValueError, "ценови редове"):
+            worker._read_prices()
+        price.goto.assert_not_called()
+        price.reload.assert_not_called()
+        price.content.assert_called_once()
 
 
 if __name__ == "__main__":

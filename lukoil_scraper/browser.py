@@ -1,92 +1,173 @@
-"""Dedicated Playwright worker; all browser calls stay on one thread."""
+"""Desktop-only Chrome CDP scraping; no extension, cookies, or CAPTCHA handling.
+
+The program launches Chrome with a dedicated persistent profile on localhost.
+The user logs in directly in Chrome and leaves the price-list tab open.
+We extract DOM HTML from that tab; verify/export NEVER navigates it.
+"""
 from __future__ import annotations
 
 import os
 from pathlib import Path
 from queue import Queue
+import shutil
+import subprocess
 from threading import Thread
+import time
 from typing import Any
+from urllib.parse import urlsplit
 
-from playwright.sync_api import BrowserContext, Page, Playwright, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_playwright
 
 from .excel_export import export_excel
 from .parser import TARGET_URL, filter_prices, parse_prices
 
 
+# Local-only debugging interface. Never bind the debugging port publicly.
+CDP_HOST = "127.0.0.1"
+CDP_PORT = 9333
+
+
 def profile_directory() -> Path:
-    """Store browser state per Windows user, outside the EXE/repository."""
+    """Separate Chrome profile so Chrome >= 136 accepts remote debugging."""
     local = os.getenv("LOCALAPPDATA")
     root = Path(local) if local else Path.home() / ".local" / "share"
-    return root / "LukoilPriceScraper" / "BrowserProfile"
+    return root / "LukoilPriceScraper" / "ChromeProfile"
+
+
+def find_chrome() -> str:
+    """Find a locally installed Chromium-based browser on Windows."""
+    choices = []
+    for variable in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        root = os.environ.get(variable)
+        if root:
+            choices.extend((
+                Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe",
+                Path(root) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+            ))
+    for choice in choices:
+        if choice.is_file():
+            return str(choice)
+    for name in ("chrome", "msedge", "google-chrome", "chromium"):
+        binary = shutil.which(name)
+        if binary:
+            return binary
+    raise RuntimeError("Не е намерен Google Chrome или Microsoft Edge на компютъра.")
+
+
+def is_price_url(url: str) -> bool:
+    """Only read prices from the exact allowed Lukoil host and page family."""
+    parsed = urlsplit(url)
+    return (
+        parsed.scheme == "https"
+        and (parsed.hostname or "").lower() == "wholesale.lukoil.bg"
+        and parsed.path.lower().startswith("/orders/cenitermlist")
+    )
+
+
+def find_price_tab(context: BrowserContext) -> Page | None:
+    """Pick the newest open price-list tab. Ignore unrelated browser content."""
+    pages = [page for page in context.pages if not page.is_closed()]
+    return next((p for p in reversed(pages) if is_price_url(p.url)), None)
 
 
 class BrowserWorker(Thread):
-    """Accept simple commands and emit events; never touch Tk from this thread.
-
-    Use _browser_context, not _context: Thread/greenlet internals may use
-    the latter for contextvars.Context on some Python versions.
-    """
+    """Own the Playwright sync API entirely within a dedicated worker thread."""
 
     def __init__(self) -> None:
         super().__init__(name="lukoil-browser", daemon=True)
         self.commands: Queue[tuple[str, Any]] = Queue()
         self.events: Queue[tuple[str, Any]] = Queue()
         self._playwright: Playwright | None = None
+        self._browser: Browser | None = None
+        # Avoid _context: Thread uses this attribute internally on some Python versions.
         self._browser_context: BrowserContext | None = None
-        self._page: Page | None = None
+        self._chrome_process: subprocess.Popen | None = None
 
     def submit(self, command: str, value: Any = None) -> None:
         self.commands.put((command, value))
 
-    def _ensure_browser(self) -> Page:
-        if self._browser_context is not None:
-            pages = [p for p in self._browser_context.pages if not p.is_closed()]
-            self._page = self._page if self._page in pages else None
-            if self._page is None:
-                self._page = pages[0] if pages else self._browser_context.new_page()
-            return self._page
+    def _connect(self) -> BrowserContext:
+        if self._browser is not None and self._browser.is_connected():
+            assert self._browser_context is not None
+            return self._browser_context
 
         if self._playwright is None:
             self._playwright = sync_playwright().start()
 
-        folder = profile_directory()
-        folder.mkdir(parents=True, exist_ok=True)
-
-        failures = []
-        for channel in ("chrome", "msedge"):
-            try:
-                self._browser_context = self._playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(folder),
-                    channel=channel,
-                    headless=False,
-                    accept_downloads=False,
-                    no_viewport=True,
+        endpoint = f"http://{CDP_HOST}:{CDP_PORT}"
+        try:
+            browser = self._playwright.chromium.connect_over_cdp(endpoint, timeout=2500)
+            self.events.put(("log", "Свързах се с Chrome, стартиран с remote debugging."))
+        except Exception:
+            profile = profile_directory()
+            profile.mkdir(parents=True, exist_ok=True)
+            executable = find_chrome()
+            flags = [
+                executable,
+                f"--remote-debugging-address={CDP_HOST}",
+                f"--remote-debugging-port={CDP_PORT}",
+                f"--user-data-dir={profile}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                TARGET_URL,
+            ]
+            # A dedicated user data dir is required by newer Chrome releases.
+            self._chrome_process = subprocess.Popen(
+                flags, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            browser = None
+            last_error: Exception | None = None
+            for _ in range(40):
+                time.sleep(0.35)
+                try:
+                    browser = self._playwright.chromium.connect_over_cdp(
+                        endpoint, timeout=1250
+                    )
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if self._chrome_process.poll() is not None:
+                        break
+            if browser is None:
+                raise RuntimeError(
+                    "Не успях да се свържа с Chrome на 127.0.0.1:9333. "
+                    "Проверете дали портът не е зает или Chrome не блокира "
+                    "remote debugging. " + str(last_error or "")
                 )
-                self._page = (
-                    self._browser_context.pages[0]
-                    if self._browser_context.pages
-                    else self._browser_context.new_page()
-                )
-                self.events.put(("log", f"Стартиран браузър: {channel}."))
-                return self._page
-            except Exception as exc:
-                failures.append(f"{channel}: {str(exc).splitlines()[0]}")
+            self.events.put((
+                "log",
+                "Chrome е стартиран с отделен локален профил. "
+                "При нужда влезте в Лукойл ръчно; CAPTCHA не се автоматизира.",
+            ))
 
-        raise RuntimeError(
-            "Не успях да стартирам Chrome или Edge. "
-            "Уверете се, че е инсталиран и че друг прозорец на приложението "
-            "не използва същия профил. " + " | ".join(failures)
-        )
+        self._browser = browser
+        if not browser.contexts:
+            raise RuntimeError("Chrome няма достъпен контекст за четене на табове.")
+        self._browser_context = browser.contexts[0]
+        return self._browser_context
 
-    def _visit_price_page(self) -> Page:
-        page = self._ensure_browser()
+    def _open_page(self) -> None:
+        context = self._connect()
+        price_page = find_price_tab(context)
+        if price_page is not None:
+            price_page.bring_to_front()
+            return
+        # Only an explicit button click opens the target page.
+        page = context.new_page()
         page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=45000)
-        return page
+        page.bring_to_front()
 
     def _read_prices(self):
-        page = self._visit_price_page()
-        # Most responses are server-rendered. Also allow the table to load
-        # asynchronously if the server later changes its implementation.
+        """Read the CURRENT tab DOM, without reopening or refreshing the page."""
+        if self._browser_context is None or self._browser is None:
+            raise RuntimeError("Първо натиснете „Отвори Chrome за цените“.")
+        context = self._connect()
+        page = find_price_tab(context)
+        if page is None:
+            raise RuntimeError(
+                "Няма отворен таб с цените на Лукойл в Chrome, "
+                "стартиран чрез приложението. Влезте и отворете ценовата листа."
+            )
         if page.locator("table.table-bordered tbody tr").count() == 0:
             try:
                 page.locator("table.table-bordered tbody tr").first.wait_for(
@@ -104,7 +185,7 @@ class BrowserWorker(Thread):
                     break
                 try:
                     if command == "open":
-                        self._visit_price_page()
+                        self._open_page()
                         self.events.put(("opened", None))
                     elif command == "verify":
                         prices = self._read_prices()
@@ -113,15 +194,20 @@ class BrowserWorker(Thread):
                         filename, terminals = payload
                         prices = filter_prices(self._read_prices(), terminals)
                         destination = export_excel(prices, filename)
-                        self.events.put(("exported", (str(destination), len(prices.rows), prices.terminals)))
+                        self.events.put((
+                            "exported",
+                            (str(destination), len(prices.rows), prices.terminals),
+                        ))
                 except Exception as exc:
                     self.events.put(("error", str(exc)))
                 finally:
                     self.events.put(("idle", None))
         finally:
-            if self._browser_context is not None:
+            # Close our CDP connection. Do not forcibly close an existing user's
+            # browser: any Chrome window that remains open can be reused later.
+            if self._browser is not None:
                 try:
-                    self._browser_context.close()
+                    self._browser.close()
                 except Exception:
                     pass
             if self._playwright is not None:

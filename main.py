@@ -10,7 +10,8 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from lukoil_scraper.browser import BrowserWorker
-from lukoil_scraper.parser import TERMINALS
+from lukoil_scraper.excel_export import export_excel
+from lukoil_scraper.parser import TERMINALS, filter_prices, parse_prices
 
 
 ctk.set_appearance_mode("dark")
@@ -21,12 +22,13 @@ class LukoilApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Lukoil Price Scraper")
-        self.geometry("850x715")
-        self.minsize(780, 670)
+        self.geometry("850x760")
+        self.minsize(780, 690)
         self.configure(fg_color="#0C1523")
         self._busy = False
         self._closing = False
         self.worker = BrowserWorker()
+        self.imported_prices = None
 
         self._build_ui()
         self.worker.start()
@@ -56,13 +58,13 @@ class LukoilApp(ctk.CTk):
             text_color="#87A6C5", font=ctk.CTkFont(size=11, weight="bold"),
         ).pack(anchor="w", padx=18, pady=(13, 3))
         self.status = ctk.CTkLabel(
-            status_box, text="●  Няма отворена браузърна сесия",
+            status_box, text="●  Отвори Chrome или импортирай HTML",
             text_color="#E6BA64", font=ctk.CTkFont(size=14),
         )
         self.status.pack(anchor="w", padx=18, pady=(0, 14))
 
         login_title = ctk.CTkLabel(
-            root, text="01   ВХОД В СИСТЕМАТА",
+            root, text="01   ИЗТОЧНИК НА ЦЕНИТЕ",
             text_color="#DCE7F5", font=ctk.CTkFont(size=13, weight="bold"),
         )
         login_title.pack(anchor="w", pady=(0, 10))
@@ -70,21 +72,27 @@ class LukoilApp(ctk.CTk):
         login_buttons.pack(fill="x", pady=(0, 8))
         login_buttons.grid_columnconfigure((0, 1), weight=1)
         self.open_button = ctk.CTkButton(
-            login_buttons, text="Отвори Chrome / Edge",
+            login_buttons, text="Отвори Chrome за цените",
             height=40, corner_radius=8, command=self._open_browser,
         )
         self.open_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self.verify_button = ctk.CTkButton(
-            login_buttons, text="Провери входа",
+            login_buttons, text="Прочети отворения таб",
             fg_color="#294158", hover_color="#355573",
             height=40, corner_radius=8, command=self._verify,
         )
         self.verify_button.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         ctk.CTkLabel(
             root,
-            text="Влез в отворения браузър, попълни CAPTCHA и натисни „Провери входа“.",
-            text_color="#9BAFC5", font=ctk.CTkFont(size=12),
-        ).pack(anchor="w", pady=(0, 18))
+            text="В Chrome, стартиран от приложението, влез ръчно при нужда. Остави ценовата листа отворена.",
+            text_color="#9BAFC5", font=ctk.CTkFont(size=12), wraplength=765, justify="left",
+        ).pack(anchor="w", pady=(3, 10))
+        self.import_button = ctk.CTkButton(
+            root, text="Алтернатива: Импортирай запазена HTML страница",
+            height=36, fg_color="#294158", hover_color="#355573",
+            command=self._import_html,
+        )
+        self.import_button.pack(fill="x", pady=(0, 16))
 
         ctk.CTkLabel(
             root, text="02   ИЗБЕРИ ТЕРМИНАЛИ",
@@ -119,7 +127,7 @@ class LukoilApp(ctk.CTk):
             text_color="#DCE7F5", font=ctk.CTkFont(size=13, weight="bold"),
         ).pack(anchor="w", pady=(0, 10))
         self.export_button = ctk.CTkButton(
-            root, text="Извлечи цени и запази .xlsx",
+            root, text="Извлечи отворената таблица → Excel (.xlsx)",
             font=ctk.CTkFont(size=14, weight="bold"),
             height=47, fg_color="#2B8CCB", hover_color="#2579B0",
             corner_radius=9, command=self._export,
@@ -137,7 +145,7 @@ class LukoilApp(ctk.CTk):
         )
         self.log.pack(fill="both", expand=True)
         self.log.configure(state="disabled")
-        self._log("Приложението е готово. Използвай собствен оторизиран акаунт.")
+        self._log("Готово. HTML таблиците се четат от вече отворения таб, без нов вход.")
 
     def _log(self, message: str) -> None:
         self.log.configure(state="normal")
@@ -151,7 +159,7 @@ class LukoilApp(ctk.CTk):
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         state = "disabled" if busy else "normal"
-        for widget in (self.open_button, self.verify_button, self.export_button, self.all_button):
+        for widget in (self.open_button, self.verify_button, self.export_button, self.all_button, self.import_button):
             widget.configure(state=state)
 
     def _toggle_all(self) -> None:
@@ -160,15 +168,46 @@ class LukoilApp(ctk.CTk):
             variable.set(select)
 
     def _open_browser(self) -> None:
+        self.imported_prices = None
         self._set_busy(True)
-        self._set_status("Отваряне на браузъра...", "#E6BA64")
-        self._log("Отварям ценовата листа. При нужда влез и попълни CAPTCHA.")
+        self._set_status("Свързване с Chrome...", "#E6BA64")
+        self._log("Свързвам Chrome с локален debugging порт. Влез ръчно само при нужда.")
         self.worker.submit("open")
 
     def _verify(self) -> None:
+        self.imported_prices = None
         self._set_busy(True)
-        self._set_status("Проверка на сесията...", "#E6BA64")
+        self._set_status("Чета отворената страница...", "#E6BA64")
         self.worker.submit("verify")
+
+    def _import_html(self) -> None:
+        source = filedialog.askopenfilename(
+            parent=self,
+            title="Избери HTML файл, запазен от страницата с цените",
+            filetypes=[("HTML страница", "*.html *.htm"), ("Всички файлове", "*.*")],
+        )
+        if not source:
+            return
+        try:
+            path = Path(source)
+            if path.stat().st_size > 15_000_000:
+                raise ValueError("HTML файлът е прекалено голям (над 15 MB).")
+            raw = path.read_bytes()
+            try:
+                html = raw.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                html = raw.decode("cp1251")
+            self.imported_prices = parse_prices(html)
+            self._set_status(
+                f"Зареден HTML: {len(self.imported_prices.rows)} реда от "
+                f"{len(self.imported_prices.terminals)} терминала",
+                "#63D1A5",
+            )
+            self._log(f"Импортирана HTML страница: {path.name}")
+        except Exception as exc:
+            self.imported_prices = None
+            self._set_status("Грешка при импортиране на HTML", "#F08C87")
+            messagebox.showerror("Импорт на HTML", str(exc), parent=self)
 
     def _export(self) -> None:
         selected = tuple(name for name, variable in self.terminal_vars.items() if variable.get())
@@ -187,9 +226,21 @@ class LukoilApp(ctk.CTk):
         if not destination:
             return
 
+        if self.imported_prices is not None:
+            try:
+                prices = filter_prices(self.imported_prices, selected)
+                output = export_excel(prices, destination)
+            except Exception as exc:
+                messagebox.showerror("Excel експорт", str(exc), parent=self)
+                return
+            self._set_status(f"Excel записан · {len(prices.rows)} реда", "#63D1A5")
+            self._log(f"Excel от импортиран HTML: {output}")
+            messagebox.showinfo("Готово", f"Записани {len(prices.rows)} реда.\n\n{output}", parent=self)
+            return
+
         self._set_busy(True)
-        self._set_status("Извличане и запис на Excel...", "#E6BA64")
-        self._log(f"Начало на извличане за {len(selected)} терминала.")
+        self._set_status("Чета текущия Chrome таб и записвам Excel...", "#E6BA64")
+        self._log(f"Скрейпинг на отворена страница за {len(selected)} терминала.")
         self.worker.submit("export", (destination, selected))
 
     def _poll_events(self) -> None:
@@ -201,12 +252,12 @@ class LukoilApp(ctk.CTk):
                 if kind == "log":
                     self._log(payload)
                 elif kind == "opened":
-                    self._set_status("Браузърът е отворен. Влез и провери сесията.", "#E6BA64")
-                    self._log("Браузърът е готов. След вход натисни „Провери входа“.")
+                    self._set_status("Chrome е готов. Отвори цените и прочети таба.", "#E6BA64")
+                    self._log("Влез при нужда и натисни „Прочети отворения таб“.")
                 elif kind == "verified":
                     count, terminals = payload
-                    self._set_status(f"Успешен вход · {len(terminals)} терминала · {count} реда", "#63D1A5")
-                    self._log(f"Потвърдена сесия. Намерени {count} ценови реда.")
+                    self._set_status(f"Табът е прочетен · {len(terminals)} терминала · {count} реда", "#63D1A5")
+                    self._log(f"Намерени {count} ценови реда в отворения таб.")
                 elif kind == "exported":
                     filename, count, terminals = payload
                     self._set_status(f"Excel записан · {count} реда", "#63D1A5")
